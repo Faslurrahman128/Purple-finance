@@ -3,6 +3,48 @@ import { pool } from '../config/db.js';
 
 const router = Router();
 
+async function getAvailableBudgetAmount(userId, month, year, excludedBudgetId = null) {
+  const { rows } = await pool.query(
+    `SELECT
+       COALESCE((
+         SELECT SUM(CASE WHEN transaction_type = 'Income' THEN amount ELSE -amount END)
+         FROM transactions
+         WHERE user_id = $1
+       ), 0) AS remaining_balance,
+       COALESCE((
+         SELECT SUM(budget_amount)
+         FROM budgets
+         WHERE user_id = $1
+           AND month_num = $2
+           AND year_num = $3
+           AND ($4::INTEGER IS NULL OR budget_id <> $4)
+       ), 0) AS allocated_budget`,
+    [userId, month, year, excludedBudgetId]
+  );
+
+  const remainingBalance = Number(rows[0].remaining_balance);
+  const allocatedBudget = Number(rows[0].allocated_budget);
+
+  return Math.max(0, remainingBalance - allocatedBudget);
+}
+
+async function rejectBudgetAboveBalance(req, res, excludedBudgetId = null) {
+  const available = await getAvailableBudgetAmount(
+    req.user.user_id,
+    Number(req.body.month_num),
+    Number(req.body.year_num),
+    excludedBudgetId
+  );
+
+  if (Number(req.body.budget_amount) <= available) return false;
+
+  res.status(400).json({
+    message: `Budget amount cannot exceed your available balance of Rs ${available.toLocaleString('en-LK', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
+    available_balance: available
+  });
+  return true;
+}
+
 const configs = {
   accounts: {
     table: 'accounts',
@@ -135,6 +177,11 @@ router.post('/:resource', config, async (req, res, next) => {
       });
     }
 
+    if (
+      selectedConfig.table === 'budgets' &&
+      await rejectBudgetAboveBalance(req, res)
+    ) return;
+
     const placeholders = selectedConfig.columns
       .map((_, index) => `$${index + 1}`)
       .join(', ');
@@ -199,6 +246,12 @@ router.put('/:resource/:id', config, async (req, res, next) => {
         message: 'Please provide a valid budget amount and month'
       });
     }
+
+
+    if (
+      selectedConfig.table === 'budgets' &&
+      await rejectBudgetAboveBalance(req, res, Number(req.params.id))
+    ) return;
 
     const setClause = selectedConfig.columns
       .map((column, index) => `${column} = $${index + 1}`)

@@ -13,7 +13,7 @@ dotenv.config({ override: true });
 const app = express();
 
 app.use(cors({ origin: process.env.FRONTEND_ORIGIN || 'http://localhost:5173', credentials: true }));
-app.use(express.json({ limit: '100kb' }));
+app.use(express.json({ limit: '3mb' }));
 
 app.get('/api/health', async (req, res) => {
   try {
